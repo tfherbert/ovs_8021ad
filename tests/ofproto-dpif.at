@@ -1542,6 +1542,46 @@ NXST_FLOW reply:
 OVS_VSWITCHD_STOP
 AT_CLEANUP
 
+AT_SETUP([ofproto-dpif - VLAN with 802.1AD Ethertype])
+OVS_VSWITCHD_START
+ADD_OF_PORTS([br0], [1], [2], [3], [4])
+
+AT_DATA([flows1.txt], [dnl
+table=0 in_port=1 dl_type=0x8100 actions=pop_vlan,output:2
+table=0 in_port=1 dl_type=0x88a8 actions=pop_vlan,output:3
+])
+AT_CHECK([ovs-ofctl add-flows br0 flows1.txt])
+AT_DATA([flows2.txt], [dnl
+table=0 in_port=2 dl_type=0x0800 actions=push_vlan:0x8100,mod_vlan_vid:9,output:1
+table=0 in_port=3 dl_type=0x0800 actions=push_vlan:0x88a8,set_field:0x1006->vlan_tci,output:1
+table=0 in_port=4 dl_type=0x0800 actions=push_vlan:0x88a8,mod_vlan_vid:11,output:1
+])
+AT_CHECK([ovs-ofctl -O OpenFlow11 add-flows br0 flows2.txt])
+
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x8100,dl_vlan=9'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: pop_vlan,2
+])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=1,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x88a8,dl_vlan=9'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: pop_vlan,3
+])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=2,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x0800'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: push_vlan(vid=9,pcp=0),1
+])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=3,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x0800'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: push_vlan(tpid=0x88a8,vid=6,pcp=0),1
+])
+AT_CHECK([ovs-appctl ofproto/trace br0 'in_port=4,dl_dst=ff:ff:ff:ff:ff:ff,dl_type=0x0800'], [0], [stdout])
+AT_CHECK([tail -1 stdout], [0],
+  [Datapath actions: push_vlan(tpid=0x88a8,vid=11,pcp=0),1
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
 AT_SETUP([ofproto-dpif - MPLS handling])
 OVS_VSWITCHD_START([dnl
    add-port br0 p1 -- set Interface p1 type=dummy
