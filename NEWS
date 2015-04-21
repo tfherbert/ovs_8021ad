@@ -93,6 +93,8 @@ v2.5.0 - 26 Feb 2016
 
 v2.4.0 - 20 Aug 2015
 ---------------------
+   - Add support for 8021.AD as specified in OpenFlow 1.1+. Adds push and pop
+     of 802.1AD Ethertype and handling of QinQ or double stacked Vlans.
    - Flow table modifications are now atomic, meaning that each packet
      now sees a coherent version of the OpenFlow pipeline.  For
      example, if a controller removes all flows with a single OpenFlow
