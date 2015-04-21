@@ -1440,8 +1440,7 @@ Strips the VLAN tag from a packet if it is present.
 .
 .IP \fBpush_vlan\fR:\fIethertype\fR
 Push a new VLAN tag onto the packet.  Ethertype is used as the Ethertype
-for the tag. Only ethertype 0x8100 should be used. (0x88a8 which the spec
-allows isn't supported at the moment.)
+for the tag. Ethertypes 0x8100 or 0x88a8 may be used.
 A priority of zero and the tag of zero are used for the new tag.
 .
 .IP \fBpush_mpls\fR:\fIethertype\fR
