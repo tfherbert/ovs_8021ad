@@ -110,7 +110,13 @@ struct flow {
     struct eth_addr dl_dst;     /* Ethernet destination address. */
     struct eth_addr dl_src;     /* Ethernet source address. */
     ovs_be16 dl_type;           /* Ethernet frame type. */
-    ovs_be16 vlan_tci;          /* If 802.1Q, TCI | VLAN_CFI; otherwise 0. */
+    ovs_be16 vlan_tci;          /* If 802.1Q, TCI | VLAN_CFI; If 802.1ad,
+                                 * outer tag, otherwise 0. */
+    ovs_be16 vlan_ctci;         /* If 802.1ad, Customer TCI | VLAN_CFI,
+                                 * inner tag, otherwise 0. */
+    ovs_be16 vlan_tpid;         /* Vlan protocol type,
+                                 * either 802.1ad or 802.1q. */
+    uint32_t pad2;              /* Pad to 64 bits. */
     ovs_be32 mpls_lse[ROUND_UP(FLOW_MAX_MPLS_LABELS, 2)]; /* MPLS label stack
                                                              (with padding). */
     /* L3 (64-bit aligned) */
@@ -127,7 +133,7 @@ struct flow {
     struct eth_addr arp_sha;    /* ARP/ND source hardware address. */
     struct eth_addr arp_tha;    /* ARP/ND target hardware address. */
     ovs_be16 tcp_flags;         /* TCP flags. With L3 to avoid matching L4. */
-    ovs_be16 pad2;              /* Pad to 64 bits. */
+    ovs_be16 pad3;              /* Pad to 64 bits. */
 
     /* L4 (64-bit aligned) */
     ovs_be16 tp_src;            /* TCP/UDP/SCTP source port. */
@@ -153,7 +159,7 @@ BUILD_ASSERT_DECL(sizeof(struct flow_tnl) % sizeof(uint64_t) == 0);
 
 /* Remember to update FLOW_WC_SEQ when changing 'struct flow'. */
 BUILD_ASSERT_DECL(offsetof(struct flow, igmp_group_ip4) + sizeof(uint32_t)
-                  == sizeof(struct flow_tnl) + 192
+                  == sizeof(struct flow_tnl) + 200
                   && FLOW_WC_SEQ == 33);
 
 /* Incremental points at which flow classification may be performed in

@@ -2795,6 +2795,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     struct flow *flow = &ctx->xin->flow;
     struct flow_tnl flow_tnl;
     ovs_be16 flow_vlan_tci;
+    ovs_be16 flow_vlan_ctci;
     uint32_t flow_pkt_mark;
     uint8_t flow_nw_tos;
     odp_port_t out_port, odp_port;
@@ -2936,6 +2937,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     }
 
     flow_vlan_tci = flow->vlan_tci;
+    flow_vlan_ctci = flow->vlan_ctci;
     flow_pkt_mark = flow->pkt_mark;
     flow_nw_tos = flow->nw_tos;
 
@@ -3062,6 +3064,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
  out:
     /* Restore flow */
     flow->vlan_tci = flow_vlan_tci;
+    flow->vlan_ctci = flow_vlan_ctci;
     flow->pkt_mark = flow_pkt_mark;
     flow->nw_tos = flow_nw_tos;
 }
@@ -4214,6 +4217,14 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             /* XXX 802.1AD(QinQ) */
             memset(&wc->masks.vlan_tci, 0xff, sizeof wc->masks.vlan_tci);
             flow->vlan_tci = htons(VLAN_CFI);
+            if (ofpact_get_PUSH_VLAN(a)->ethertype == htons(ETH_TYPE_VLAN_8021AD)) {
+                memset(&wc->masks.vlan_ctci, 0xff, sizeof wc->masks.vlan_ctci);
+                flow->vlan_ctci |= htons(VLAN_CFI);
+                memset(&wc->masks.vlan_tpid, 0xff, sizeof wc->masks.vlan_tpid);
+                flow->vlan_tpid = htons(ETH_TYPE_VLAN_8021AD);
+            } else if (ofpact_get_PUSH_VLAN(a)->ethertype == htons(ETH_TYPE_VLAN_8021Q)) {
+                flow->vlan_tpid = htons(ETH_TYPE_VLAN_8021Q);
+            }
             break;
 
         case OFPACT_SET_ETH_SRC:
