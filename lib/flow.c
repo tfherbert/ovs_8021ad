@@ -339,7 +339,7 @@ parse_vlan(const void **datap, size_t *sizep)
 
     data_pull(datap, sizep, ETH_ADDR_LEN * 2);
 
-    if (eth->eth_type == htons(ETH_TYPE_VLAN)) {
+    if (eth_type_vlan(eth->eth_type)) {
         if (OVS_LIKELY(*sizep
                        >= sizeof(struct qtag_prefix) + sizeof(ovs_be16))) {
             const struct qtag_prefix *qp = data_pull(datap, sizep, sizeof *qp);

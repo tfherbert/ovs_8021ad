@@ -66,7 +66,7 @@
     OFPACT(SET_VLAN_VID,    ofpact_vlan_vid,    ofpact, "set_vlan_vid") \
     OFPACT(SET_VLAN_PCP,    ofpact_vlan_pcp,    ofpact, "set_vlan_pcp") \
     OFPACT(STRIP_VLAN,      ofpact_null,        ofpact, "strip_vlan")   \
-    OFPACT(PUSH_VLAN,       ofpact_null,        ofpact, "push_vlan")    \
+    OFPACT(PUSH_VLAN,       ofpact_push_vlan,   ofpact, "push_vlan")    \
     OFPACT(SET_ETH_SRC,     ofpact_mac,         ofpact, "mod_dl_src")   \
     OFPACT(SET_ETH_DST,     ofpact_mac,         ofpact, "mod_dl_dst")   \
     OFPACT(SET_IPV4_SRC,    ofpact_ipv4,        ofpact, "mod_nw_src")   \
@@ -440,7 +440,15 @@ struct ofpact_set_field {
     union mf_value mask;
 };
 
-/* OFPACT_PUSH_VLAN/MPLS/PBB
+/* OFPACT_PUSH_VLAN
+ *
+ * Used for OFPAT11_PUSH_VLAN. */
+struct ofpact_push_vlan {
+    struct ofpact ofpact;
+    ovs_be16 ethertype;
+};
+
+/* OFPACT_PUSH_MPLS
  *
  * Used for NXAST_PUSH_MPLS, OFPAT11_PUSH_MPLS. */
 struct ofpact_push_mpls {
@@ -450,7 +458,7 @@ struct ofpact_push_mpls {
 
 /* OFPACT_POP_MPLS
  *
- * Used for NXAST_POP_MPLS, OFPAT11_POP_MPLS.. */
+ * Used for NXAST_POP_MPLS, OFPAT11_POP_MPLS. */
 struct ofpact_pop_mpls {
     struct ofpact ofpact;
     ovs_be16 ethertype;
