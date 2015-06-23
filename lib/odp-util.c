@@ -4243,7 +4243,8 @@ odp_flow_key_from_flow__(const struct odp_flow_key_parms *parms,
                          bool export_mask, struct ofpbuf *buf)
 {
     struct ovs_key_ethernet *eth_key;
-    size_t encap;
+    size_t encap = 0;
+    size_t inner_encap = 0;
     const struct flow *flow = parms->flow;
     const struct flow *data = export_mask ? parms->mask : parms->flow;
 
@@ -4285,19 +4286,36 @@ odp_flow_key_from_flow__(const struct odp_flow_key_parms *parms,
                                        sizeof *eth_key);
     get_ethernet_key(data, eth_key);
 
-    if (flow->vlan_tci != htons(0) || flow->dl_type == htons(ETH_TYPE_VLAN)) {
+    if ((flow->ovlan.vlan_tci != htons(0)) ||
+        eth_type_vlan(flow->ovlan.vlan_tpid)) {
         if (export_mask) {
             nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE, OVS_BE16_MAX);
         } else {
-            nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE, htons(ETH_TYPE_VLAN));
+            nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE,
+                            data->ovlan.vlan_tpid);
         }
-        nl_msg_put_be16(buf, OVS_KEY_ATTR_VLAN, data->vlan_tci);
+        nl_msg_put_be16(buf, OVS_KEY_ATTR_VLAN, data->ovlan.vlan_tci);
         encap = nl_msg_start_nested(buf, OVS_KEY_ATTR_ENCAP);
-        if (flow->vlan_tci == htons(0)) {
+        if (flow->ovlan.vlan_tci == htons(0)) {
             goto unencap;
         }
-    } else {
-        encap = 0;
+    }
+    /* Now, code the inner customer vlan if there is one. */
+    if ((flow->ivlan.vlan_tci != htons(0)) ||
+        eth_type_vlan(flow->ivlan.vlan_tpid)) {
+        if (export_mask) {
+            nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE, OVS_BE16_MAX);
+        } else {
+            nl_msg_put_be16(buf, OVS_KEY_ATTR_ETHERTYPE,
+                            data->ivlan.vlan_tpid);
+        }
+        nl_msg_put_be16(buf, OVS_KEY_ATTR_VLAN, data->ivlan.vlan_tci);
+
+        /* Now, code another layer of nesting for the payload. */
+        inner_encap = nl_msg_start_nested(buf, OVS_KEY_ATTR_ENCAP);
+        if (flow->ivlan.vlan_tci == htons(0)) {
+            goto unencap;
+        }
     }
 
     if (ntohs(flow->dl_type) < ETH_TYPE_MIN) {
@@ -4416,6 +4434,9 @@ odp_flow_key_from_flow__(const struct odp_flow_key_parms *parms,
     }
 
 unencap:
+    if (inner_encap) {
+        nl_msg_end_nested(buf, inner_encap);
+    }
     if (encap) {
         nl_msg_end_nested(buf, encap);
     }
@@ -4975,24 +4996,15 @@ done:
                               key, key_len);
 }
 
-/* Parse 802.1Q header then encapsulated L3 attributes. */
 static enum odp_key_fitness
-parse_8021q_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
-                   uint64_t present_attrs, int out_of_range_attr,
-                   uint64_t expected_attrs, struct flow *flow,
-                   const struct nlattr *key, size_t key_len,
-                   const struct flow *src_flow)
+parse_encap_and_vlan(uint64_t present_attrs, int out_of_range_attr,
+                     uint64_t expected_attrs, struct flow *flow,
+                     const struct nlattr *key, size_t key_len,
+                     const struct flow *src_flow)
 {
-    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
     bool is_mask = src_flow != flow;
 
-    const struct nlattr *encap
-        = (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP)
-           ? attrs[OVS_KEY_ATTR_ENCAP] : NULL);
-    enum odp_key_fitness encap_fitness;
-    enum odp_key_fitness fitness;
-
-    /* Calculate fitness of outer attributes. */
+    /* Calculate fitness of ethertype, vlan and encap attributes. */
     if (!is_mask) {
         expected_attrs |= ((UINT64_C(1) << OVS_KEY_ATTR_VLAN) |
                           (UINT64_C(1) << OVS_KEY_ATTR_ENCAP));
@@ -5003,45 +5015,140 @@ parse_8021q_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
         if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP)) {
             expected_attrs |= (UINT64_C(1) << OVS_KEY_ATTR_ENCAP);
         }
+        if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ETHERTYPE)) {
+            expected_attrs |= (UINT64_C(1) << OVS_KEY_ATTR_ETHERTYPE);
+        }
     }
-    fitness = check_expectations(present_attrs, out_of_range_attr,
-                                 expected_attrs, key, key_len);
+    return check_expectations(present_attrs, out_of_range_attr,
+                              expected_attrs, key, key_len);
+}
 
-    /* Set vlan_tci.
-     * Remove the TPID from dl_type since it's not the real Ethertype.  */
-    flow->dl_type = htons(0);
-    flow->vlan_tci = (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN)
-                      ? nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN])
-                      : htons(0));
+static enum odp_key_fitness
+parse_one_vlan(const struct nlattr *attrs[OVS_KEY_ATTR_MAX +1],
+               uint64_t *present_attrs, int out_of_range_attr,
+               uint64_t expected_attrs, struct flow *flow,
+               const struct nlattr *key, size_t key_len,
+               const struct flow *src_flow, const struct nlattr *encap,
+               ovs_be16 *tci, ovs_be16 *tpid)
+{
+    static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
+    bool is_mask = src_flow != flow;
+    enum odp_key_fitness fitness;
+    uint64_t encap_attrs = *present_attrs;
+
+    /* Calculate fitness of the vlan attributes */
+    fitness = parse_encap_and_vlan(encap_attrs, out_of_range_attr,
+                                   expected_attrs, flow, key, key_len,
+                                   src_flow);
+
+    *tci = (encap_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN)
+                ? nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN])
+                : htons(0));
+    *tpid = (encap_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ETHERTYPE)
+             ? nl_attr_get_be16(attrs[OVS_KEY_ATTR_ETHERTYPE])
+             : htons(0));
+
     if (!is_mask) {
-        if (!(present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN))) {
+        if (!(encap_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN))) {
             return ODP_FIT_TOO_LITTLE;
-        } else if (flow->vlan_tci == htons(0)) {
+        } else if (*tci == htons(0)) {
             /* Corner case for a truncated 802.1Q header. */
             if (fitness == ODP_FIT_PERFECT && nl_attr_get_size(encap)) {
                 return ODP_FIT_TOO_MUCH;
             }
             return fitness;
-        } else if (!(flow->vlan_tci & htons(VLAN_CFI))) {
-            VLOG_ERR_RL(&rl, "OVS_KEY_ATTR_VLAN 0x%04"PRIx16" is nonzero "
-                        "but CFI bit is not set", ntohs(flow->vlan_tci));
+        } else if (!(*tci & htons(VLAN_CFI))) {
+            VLOG_ERR_RL(&rl, "OVS_KEY_ATTR_VLAN 0x%04"PRIx16" is nonzero"
+                        " but CFI bit is not set", ntohs(*tci));
             return ODP_FIT_ERROR;
         }
     } else {
-        if (!(present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP))) {
+        if (!(encap_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP))) {
             return fitness;
         }
     }
-
+    expected_attrs = 0;
     /* Now parse the encapsulated attributes. */
     if (!parse_flow_nlattrs(nl_attr_get(encap), nl_attr_get_size(encap),
-                            attrs, &present_attrs, &out_of_range_attr)) {
+                            attrs, &encap_attrs, &out_of_range_attr)) {
         return ODP_FIT_ERROR;
     }
-    expected_attrs = 0;
+    *present_attrs = encap_attrs;
+    return fitness;
+}
 
-    if (!parse_ethertype(attrs, present_attrs, &expected_attrs, flow, src_flow)) {
+/* Parse 802.1AD or 802.1Q and then parse encapsulated Attributes. */
+static enum odp_key_fitness
+parse_vlan_onward(const struct nlattr *attrs[OVS_KEY_ATTR_MAX + 1],
+                  uint64_t present_attrs, int out_of_range_attr,
+                  uint64_t expected_attrs, struct flow *flow,
+                  const struct nlattr *key, size_t key_len,
+                  const struct flow *src_flow)
+{
+    bool is_mask = src_flow != flow;
+    ovs_be16 tci, tpid, dl_type;
+    enum odp_key_fitness fitness, encap_fitness;
+    const struct nlattr *encap =
+                (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP)
+                ? attrs[OVS_KEY_ATTR_ENCAP] : NULL);
+
+    /* Get outer tag, vlan tci and vlan tpid.
+     * If there is only one vlan, put it in the inner vlan later.
+     * Remove the TPID from dl_type since it's not the real Ethertype. */
+    flow->dl_type = htons(0);
+
+    fitness = parse_one_vlan(attrs, &present_attrs, out_of_range_attr,
+                         expected_attrs, flow, key, key_len, src_flow, encap,
+                         &tci, &tpid);
+    if (fitness == ODP_FIT_ERROR)
         return ODP_FIT_ERROR;
+    flow->ivlan.vlan_tci = tci;
+    flow->ivlan.vlan_tpid = tpid;
+
+    dl_type = (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ETHERTYPE)
+                ? nl_attr_get_be16(attrs[OVS_KEY_ATTR_ETHERTYPE])
+                : htons(0));
+    if (eth_type_vlan(dl_type)) {
+        if (is_mask
+            ? ((src_flow->ivlan.vlan_tci & htons(VLAN_CFI)) != 0)
+            : eth_type_vlan(dl_type)) {
+            ovs_be16 itci, itpid;
+            enum odp_key_fitness vfitness;
+            const struct nlattr *vcap =
+                    (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_ENCAP)
+                    ? attrs[OVS_KEY_ATTR_ENCAP] : NULL);
+
+            /* Remove the dl_type since it is not the real encapsulated ethertype.*/
+            flow->dl_type = htons(0);
+
+
+            /* Get inner tag, vlan tci and vlan tpid. */
+            vfitness = parse_one_vlan(attrs, &present_attrs, out_of_range_attr,
+                              expected_attrs, flow, key, key_len, src_flow, vcap,
+                              &itci, &itpid);
+            if (vfitness == ODP_FIT_ERROR)
+                return vfitness;
+
+            /* Move inner vlan to outer position since it is not the "real inner vlan."*/
+            memcpy((char *)&flow->ovlan, (char *)&flow->ivlan, sizeof flow->ovlan);
+
+            flow->ivlan.vlan_tci = itci;
+            flow->ivlan.vlan_tpid = itpid;
+
+            fitness = MAX(fitness, vfitness);
+        }
+    } else {
+        expected_attrs = 0;
+        /* Now parse the encapsulated attributes. */
+        if (!parse_flow_nlattrs(nl_attr_get(encap), nl_attr_get_size(encap),
+            attrs, &present_attrs, &out_of_range_attr)) {
+            return ODP_FIT_ERROR;
+        }
+
+        if (!parse_ethertype(attrs, present_attrs, &expected_attrs, flow,
+            src_flow)) {
+            return ODP_FIT_ERROR;
+        }
     }
     encap_fitness = parse_l2_5_onward(attrs, present_attrs, out_of_range_attr,
                                       expected_attrs, flow, key, key_len,
@@ -5152,26 +5259,28 @@ odp_flow_key_to_flow__(const struct nlattr *key, size_t key_len,
         expected_attrs |= UINT64_C(1) << OVS_KEY_ATTR_ETHERNET;
     }
 
-    /* Get Ethertype or 802.1Q TPID or FLOW_DL_TYPE_NONE. */
+    /* Get Ethertype or VLAN TPID or FLOW_DL_TYPE_NONE. */
     if (!parse_ethertype(attrs, present_attrs, &expected_attrs, flow,
         src_flow)) {
         return ODP_FIT_ERROR;
     }
 
     if (is_mask
-        ? (src_flow->vlan_tci & htons(VLAN_CFI)) != 0
-        : src_flow->dl_type == htons(ETH_TYPE_VLAN)) {
-        return parse_8021q_onward(attrs, present_attrs, out_of_range_attr,
-                                  expected_attrs, flow, key, key_len, src_flow);
+        ? ((src_flow->ivlan.vlan_tci & htons(VLAN_CFI)) != 0) ||
+           ((src_flow->ovlan.vlan_tci & htons(VLAN_CFI)) != 0)
+        : eth_type_vlan(src_flow->dl_type)) {
+        return parse_vlan_onward(attrs, present_attrs, out_of_range_attr,
+                                 expected_attrs, flow, key, key_len, src_flow);
     }
     if (is_mask) {
         /* A missing VLAN mask means exact match on vlan_tci 0 (== no VLAN). */
-        flow->vlan_tci = htons(0xffff);
+        flow->ivlan.vlan_tci = htons(0xffff);
         if (present_attrs & (UINT64_C(1) << OVS_KEY_ATTR_VLAN)) {
-            flow->vlan_tci = nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN]);
+            flow->ivlan.vlan_tci = nl_attr_get_be16(attrs[OVS_KEY_ATTR_VLAN]);
             expected_attrs |= (UINT64_C(1) << OVS_KEY_ATTR_VLAN);
         }
     }
+
     return parse_l2_5_onward(attrs, present_attrs, out_of_range_attr,
                              expected_attrs, flow, key, key_len, src_flow);
 }
@@ -5457,37 +5566,119 @@ commit_set_ether_addr_action(const struct flow *flow, struct flow *base_flow,
         put_ethernet_key(&mask, &wc->masks);
     }
 }
-
-static void
-pop_vlan(struct flow *base,
-         struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+static int
+flow_get_vlan_depth(const struct flow *flow)
 {
-    memset(&wc->masks.vlan_tci, 0xff, sizeof wc->masks.vlan_tci);
+    int n = 0;
+    if (flow->ivlan.vlan_tci & htons(VLAN_CFI) || flow->ivlan.vlan_tpid)
+        n++;
+    if (flow->ovlan.vlan_tci & htons(VLAN_CFI) || flow->ovlan.vlan_tpid)
+        n++;
+    return n;
+}
+static void
+commit_pop_vlan_action(struct flow *base, struct ofpbuf *odp_actions,
+                       struct flow_wildcards *wc)
+{
+    int base_n = flow_get_vlan_depth(base);
 
-    if (base->vlan_tci & htons(VLAN_CFI)) {
-        nl_msg_put_flag(odp_actions, OVS_ACTION_ATTR_POP_VLAN);
-        base->vlan_tci = 0;
+    if (base_n == 0)
+        return;
+
+    memset(&wc->masks.ivlan.vlan_tci, 0xff, sizeof wc->masks.ivlan.vlan_tci);
+    memset(&wc->masks.ivlan.vlan_tpid, 0xff, sizeof wc->masks.ivlan.vlan_tpid);
+
+
+    if (base_n == 1) {
+
+        base->ivlan.vlan_tci = 0;
+        base->ivlan.vlan_tpid = 0;
+    } else if (base_n ==2) {
+
+        memset(&wc->masks.ovlan.vlan_tci, 0xff, sizeof wc->masks.ovlan.vlan_tci);
+        memset(&wc->masks.ovlan.vlan_tpid, 0xff, sizeof wc->masks.ovlan.vlan_tpid);
+        base->ovlan.vlan_tpid = 0;
+        base->ovlan.vlan_tci = 0;
     }
+    nl_msg_put_flag(odp_actions, OVS_ACTION_ATTR_POP_VLAN);
 }
 
 static void
-commit_vlan_action(ovs_be16 vlan_tci, struct flow *base,
-                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+commit_push_vlan_action(struct flow *base, struct ovs_action_push_vlan *vlan,
+                        struct ofpbuf *odp_actions,
+                        struct flow_wildcards *wc)
 {
-    if (base->vlan_tci == vlan_tci) {
+    ovs_be16 vlan_tpid = vlan->vlan_tpid;
+    ovs_be16 vlan_tci = vlan->vlan_tci;
+    int base_n;
+
+    if (!(vlan_tci & htons(VLAN_CFI)))
+        return;
+
+
+    base_n = flow_get_vlan_depth(base);
+
+    if (base_n == 2) {
         return;
     }
 
-    pop_vlan(base, odp_actions, wc);
-    if (vlan_tci & htons(VLAN_CFI)) {
-        struct ovs_action_push_vlan vlan;
-
-        vlan.vlan_tpid = htons(ETH_TYPE_VLAN);
-        vlan.vlan_tci = vlan_tci;
-        nl_msg_put_unspec(odp_actions, OVS_ACTION_ATTR_PUSH_VLAN,
-                          &vlan, sizeof vlan);
+    if (base_n == 1) {
+        base->ovlan.vlan_tci = vlan_tci;
+        base->ovlan.vlan_tpid = vlan_tpid ? vlan_tpid :
+                                            htons(ETH_TYPE_VLAN_8021AD);
+        memset(&wc->masks.ovlan.vlan_tci, 0xff, sizeof wc->masks.ovlan.vlan_tci);
+        memset(&wc->masks.ovlan.vlan_tpid, 0xff, sizeof wc->masks.ovlan.vlan_tpid);
+    } else if (base_n == 0) {
+        memset(&wc->masks.ivlan.vlan_tci, 0xff, sizeof wc->masks.ivlan.vlan_tci);
+        memset(&wc->masks.ivlan.vlan_tpid, 0xff, sizeof wc->masks.ivlan.vlan_tpid);
+        base->ivlan.vlan_tci = vlan_tci;
+        base->ivlan.vlan_tpid = vlan_tpid ? vlan_tpid :
+                                            htons(ETH_TYPE_VLAN_8021Q);
     }
-    base->vlan_tci = vlan_tci;
+
+    nl_msg_put_unspec(odp_actions, OVS_ACTION_ATTR_PUSH_VLAN,
+                      vlan, sizeof *vlan);
+}
+
+static void
+commit_vlan_action(const struct flow *flow, struct flow *base,
+                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+{
+    struct ovs_action_push_vlan vlan;
+    int base_n;
+    int flow_n;
+
+    if ((base->ivlan.vlan_tci == flow->ivlan.vlan_tci) &&
+        (base->ovlan.vlan_tci == flow->ovlan.vlan_tci))
+        return;
+
+    base_n = flow_get_vlan_depth(base);
+    flow_n = flow_get_vlan_depth(flow);
+
+    if (flow_n == 1) {
+        vlan.vlan_tci = flow->ivlan.vlan_tci;
+        vlan.vlan_tpid = flow->ivlan.vlan_tpid;
+    } else if (flow_n == 2) {
+        vlan.vlan_tci = flow->ovlan.vlan_tci;
+        vlan.vlan_tpid = flow->ovlan.vlan_tpid;
+    }
+
+    if (flow_n == base_n) {
+        if (flow_n == 1 && vlan.vlan_tci == base->ivlan.vlan_tci) {
+            return;
+        } else if (flow_n == 2 && vlan.vlan_tci == base->ovlan.vlan_tci) {
+            return;
+        } else {
+            commit_pop_vlan_action(base, odp_actions, wc);
+            commit_push_vlan_action(base, &vlan, odp_actions, wc);
+        }
+    }
+    else if (flow_n > base_n) {
+        commit_push_vlan_action(base, &vlan, odp_actions, wc);
+    }
+    else if (flow_n < base_n) {
+        commit_pop_vlan_action(base, odp_actions, wc);
+    }
 }
 
 /* Wildcarding already done at action translation time. */
@@ -5920,7 +6111,7 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
     commit_set_port_action(flow, base, odp_actions, wc, use_masked);
     slow2 = commit_set_icmp_action(flow, base, odp_actions, wc);
     commit_mpls_action(flow, base, odp_actions);
-    commit_vlan_action(flow->vlan_tci, base, odp_actions, wc);
+    commit_vlan_action(flow, base, odp_actions, wc);
     commit_set_priority_action(flow, base, odp_actions, wc, use_masked);
     commit_set_pkt_mark_action(flow, base, odp_actions, wc, use_masked);
 
