@@ -3549,8 +3549,11 @@ fast_path_processing(struct dp_netdev_pmd_thread *pmd,
              * VLAN.  Unless we refactor a lot of code that translates between
              * Netlink and struct flow representations, we have to do the same
              * here. */
-            if (!match.wc.masks.vlan_tci) {
-                match.wc.masks.vlan_tci = htons(0xffff);
+            if (!match.wc.masks.ivlan.vlan_tci) {
+                match.wc.masks.ivlan.vlan_tci = htons(0xffff);
+            }
+            if (!match.wc.masks.ovlan.vlan_tci) {
+                match.wc.masks.ovlan.vlan_tci = htons(0xffff);
             }
 
             /* We can't allow the packet batching in the next loop to execute

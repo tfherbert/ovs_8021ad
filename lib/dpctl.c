@@ -1515,12 +1515,21 @@ dpctl_normalize_actions(int argc, const char *argv[],
         const struct ovs_action_push_vlan *push;
         switch(nl_attr_type(a)) {
         case OVS_ACTION_ATTR_POP_VLAN:
-            flow.vlan_tci = htons(0);
+            if (flow.ovlan.vlan_tci & htons(VLAN_CFI))
+                flow.ovlan.vlan_tci = htons(0);
+            else if (flow.ivlan.vlan_tci & htons(VLAN_CFI))
+                flow.ivlan.vlan_tci = htons(0);
             continue;
 
         case OVS_ACTION_ATTR_PUSH_VLAN:
             push = nl_attr_get_unspec(a, sizeof *push);
-            flow.vlan_tci = push->vlan_tci;
+            if (flow.ivlan.vlan_tci & htons(VLAN_CFI)) {
+                flow.ovlan.vlan_tci = push->vlan_tci;
+                flow.ovlan.vlan_tpid = push->vlan_tpid;
+            } else {
+                flow.ivlan.vlan_tci = push->vlan_tci;
+                flow.ivlan.vlan_tpid = push->vlan_tpid;
+            }
             continue;
         }
 
@@ -1546,10 +1555,14 @@ dpctl_normalize_actions(int argc, const char *argv[],
 
         sort_output_actions(af->actions.data, af->actions.size);
 
-        if (af->flow.vlan_tci != htons(0)) {
-            dpctl_print(dpctl_p, "vlan(vid=%"PRIu16",pcp=%d): ",
-                        vlan_tci_to_vid(af->flow.vlan_tci),
-                        vlan_tci_to_pcp(af->flow.vlan_tci));
+        if (af->flow.ivlan.vlan_tci != htons(0)) {
+            dpctl_print(dpctl_p, "ivlan(vid=%"PRIu16",pcp=%d): ",
+                        vlan_tci_to_vid(af->flow.ivlan.vlan_tci),
+                        vlan_tci_to_pcp(af->flow.ivlan.vlan_tci));
+        } else if (af->flow.ovlan.vlan_tci != htons(0)) {
+            dpctl_print(dpctl_p, "ovlan(vid=%"PRIu16",pcp=%d): ",
+                        vlan_tci_to_vid(af->flow.ovlan.vlan_tci),
+                        vlan_tci_to_pcp(af->flow.ovlan.vlan_tci));
         } else {
             dpctl_print(dpctl_p, "no vlan: ");
         }
