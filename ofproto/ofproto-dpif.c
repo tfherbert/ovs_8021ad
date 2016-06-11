@@ -5589,14 +5589,14 @@ vsp_adjust_flow(const struct ofproto_dpif *ofproto, struct flow *flow,
     /* Cause the flow to be processed as if it came in on the real device with
      * the VLAN device's VLAN ID. */
     flow->in_port.ofp_port = realdev;
-    flow->vlan_tci = htons((vid & VLAN_VID_MASK) | VLAN_CFI);
+    flow->ivlan.vlan_tci = htons((vid & VLAN_VID_MASK) | VLAN_CFI);
 
     if (packet) {
         /* Make the packet resemble the flow, so that it gets sent to an
          * OpenFlow controller properly, so that it looks correct for sFlow,
          * and so that flow_extract() will get the correct vlan_tci if it is
          * called on 'packet'. */
-        eth_push_vlan(packet, htons(ETH_TYPE_VLAN), flow->vlan_tci);
+        eth_push_vlan(packet, htons(ETH_TYPE_VLAN), flow->ivlan.vlan_tci);
     }
 
     return true;

@@ -1381,7 +1381,7 @@ ipfix_cache_entry_init(struct ipfix_flow_cache_entry *entry,
 
     /* Choose the right template ID matching the protocols in the
      * sampled packet. */
-    l2 = (flow->vlan_tci == 0) ? IPFIX_PROTO_L2_ETH : IPFIX_PROTO_L2_VLAN;
+    l2 = (flow->ivlan.vlan_tci == 0) ? IPFIX_PROTO_L2_ETH : IPFIX_PROTO_L2_VLAN;
 
     switch(ntohs(flow->dl_type)) {
     case ETH_TYPE_IP:
@@ -1450,8 +1450,8 @@ ipfix_cache_entry_init(struct ipfix_flow_cache_entry *entry,
 
     if (l2 == IPFIX_PROTO_L2_VLAN) {
         struct ipfix_data_record_flow_key_vlan *data_vlan;
-        uint16_t vlan_id = vlan_tci_to_vid(flow->vlan_tci);
-        uint8_t priority = vlan_tci_to_pcp(flow->vlan_tci);
+        uint16_t vlan_id = vlan_tci_to_vid(flow->ivlan.vlan_tci);
+        uint8_t priority = vlan_tci_to_pcp(flow->ivlan.vlan_tci);
 
         data_vlan = dp_packet_put_zeros(&msg, sizeof *data_vlan);
         data_vlan->vlan_id = htons(vlan_id);

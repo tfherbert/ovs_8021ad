@@ -1324,7 +1324,7 @@ handle_upcalls(struct udpif *udpif, struct upcall *upcalls,
 
             /* Remove the flow vlan tags inserted by vlan splinter logic
              * to ensure megaflow masks generated match the data path flow. */
-            CONST_CAST(struct flow *, upcall->flow)->vlan_tci = 0;
+            CONST_CAST(struct flow *, upcall->flow)->ivlan.vlan_tci = 0;
         }
 
         /* Do not install a flow into the datapath if:

@@ -1633,7 +1633,7 @@ mirror_packet(struct xlate_ctx *ctx, struct xbundle *xbundle,
     /* Figure out what VLAN the packet is in (because mirrors can select
      * packets on basis of VLAN). */
     bool warn = ctx->xin->packet != NULL;
-    uint16_t vid = vlan_tci_to_vid(ctx->xin->flow.vlan_tci);
+    uint16_t vid = vlan_tci_to_vid(ctx->xin->flow.ivlan.vlan_tci);
     if (!input_vid_is_valid(vid, xbundle, warn)) {
         return;
     }
@@ -1676,7 +1676,7 @@ mirror_packet(struct xlate_ctx *ctx, struct xbundle *xbundle,
         /* If this mirror selects on the basis of VLAN, and it does not select
          * 'vlan', then discard this mirror and go on to the next one. */
         if (vlans) {
-            ctx->wc->masks.vlan_tci |= htons(VLAN_CFI | VLAN_VID_MASK);
+            ctx->wc->masks.ivlan.vlan_tci |= htons(VLAN_CFI | VLAN_VID_MASK);
         }
         if (vlans && !bitmap_is_set(vlans, vlan)) {
             mirrors = zero_rightmost_1bit(mirrors);
@@ -1838,7 +1838,7 @@ static void
 output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
               uint16_t vlan)
 {
-    ovs_be16 *flow_tci = &ctx->xin->flow.vlan_tci;
+    ovs_be16 *flow_tci = &ctx->xin->flow.ivlan.vlan_tci;
     uint16_t vid;
     ovs_be16 tci, old_tci;
     struct xport *xport;
@@ -2373,7 +2373,7 @@ xlate_normal(struct xlate_ctx *ctx)
 
     memset(&wc->masks.dl_src, 0xff, sizeof wc->masks.dl_src);
     memset(&wc->masks.dl_dst, 0xff, sizeof wc->masks.dl_dst);
-    wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
+    wc->masks.ivlan.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
 
     in_xbundle = lookup_input_bundle(ctx->xbridge, flow->in_port.ofp_port,
                                      ctx->xin->packet != NULL, &in_port);
@@ -2384,7 +2384,7 @@ xlate_normal(struct xlate_ctx *ctx)
 
     /* Drop malformed frames. */
     if (flow->dl_type == htons(ETH_TYPE_VLAN) &&
-        !(flow->vlan_tci & htons(VLAN_CFI))) {
+        !(flow->ivlan.vlan_tci & htons(VLAN_CFI))) {
         if (ctx->xin->packet != NULL) {
             static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
             VLOG_WARN_RL(&rl, "bridge %s: dropping packet with partial "
@@ -2408,7 +2408,7 @@ xlate_normal(struct xlate_ctx *ctx)
     }
 
     /* Check VLAN. */
-    vid = vlan_tci_to_vid(flow->vlan_tci);
+    vid = vlan_tci_to_vid(flow->ivlan.vlan_tci);
     if (!input_vid_is_valid(vid, in_xbundle, ctx->xin->packet != NULL)) {
         xlate_report(ctx, "disallowed VLAN VID for this input port, dropping");
         return;
@@ -2668,7 +2668,7 @@ fix_sflow_action(struct xlate_ctx *ctx, unsigned int user_cookie_offset)
     ovs_assert(cookie->type == USER_ACTION_COOKIE_SFLOW);
 
     cookie->type = USER_ACTION_COOKIE_SFLOW;
-    cookie->sflow.vlan_tci = base->vlan_tci;
+    cookie->sflow.vlan_tci = base->ivlan.vlan_tci;
 
     /* See http://www.sflow.org/sflow_version_5.txt (search for "Input/output
      * port information") for the interpretation of cookie->output. */
@@ -2939,6 +2939,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
     struct flow *flow = &ctx->xin->flow;
     struct flow_tnl flow_tnl;
     ovs_be16 flow_vlan_tci;
+    ovs_be16 flow_vlan_ctci;
     uint32_t flow_pkt_mark;
     uint8_t flow_nw_tos;
     odp_port_t out_port, odp_port;
@@ -2947,7 +2948,7 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
 
     /* If 'struct flow' gets additional metadata, we'll need to zero it out
      * before traversing a patch port. */
-    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 35);
+    BUILD_ASSERT_DECL(FLOW_WC_SEQ == 36);
     memset(&flow_tnl, 0, sizeof flow_tnl);
 
     if (!xport) {
@@ -3074,7 +3075,8 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
         return;
     }
 
-    flow_vlan_tci = flow->vlan_tci;
+    flow_vlan_tci = flow->ovlan.vlan_tci;
+    flow_vlan_ctci = flow->ivlan.vlan_tci;
     flow_pkt_mark = flow->pkt_mark;
     flow_nw_tos = flow->nw_tos;
 
@@ -3128,12 +3130,12 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
         if (ofproto_has_vlan_splinters(ctx->xbridge->ofproto)) {
             ofp_port_t vlandev_port;
 
-            wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
+            wc->masks.ivlan.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
             vlandev_port = vsp_realdev_to_vlandev(ctx->xbridge->ofproto,
-                                                  ofp_port, flow->vlan_tci);
+                                                  ofp_port, flow->ivlan.vlan_tci);
             if (vlandev_port != ofp_port) {
                 out_port = ofp_port_to_odp_port(ctx->xbridge, vlandev_port);
-                flow->vlan_tci = htons(0);
+                flow->ivlan.vlan_tci = htons(0);
             }
         }
     }
@@ -3198,7 +3200,8 @@ compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
 
  out:
     /* Restore flow */
-    flow->vlan_tci = flow_vlan_tci;
+    flow->ovlan.vlan_tci = flow_vlan_tci;
+    flow->ivlan.vlan_tci = flow_vlan_ctci;
     flow->pkt_mark = flow_pkt_mark;
     flow->nw_tos = flow_nw_tos;
 }
@@ -4505,34 +4508,50 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             break;
 
         case OFPACT_SET_VLAN_VID:
-            wc->masks.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
-            if (flow->vlan_tci & htons(VLAN_CFI) ||
+            wc->masks.ivlan.vlan_tci |= htons(VLAN_VID_MASK | VLAN_CFI);
+            if (flow->ivlan.vlan_tci & htons(VLAN_CFI) ||
                 ofpact_get_SET_VLAN_VID(a)->push_vlan_if_needed) {
-                flow->vlan_tci &= ~htons(VLAN_VID_MASK);
-                flow->vlan_tci |= (htons(ofpact_get_SET_VLAN_VID(a)->vlan_vid)
+                flow->ivlan.vlan_tci &= ~htons(VLAN_VID_MASK);
+                flow->ivlan.vlan_tci |= (htons(ofpact_get_SET_VLAN_VID(a)->vlan_vid)
                                    | htons(VLAN_CFI));
             }
             break;
 
         case OFPACT_SET_VLAN_PCP:
-            wc->masks.vlan_tci |= htons(VLAN_PCP_MASK | VLAN_CFI);
-            if (flow->vlan_tci & htons(VLAN_CFI) ||
+            wc->masks.ivlan.vlan_tci |= htons(VLAN_PCP_MASK | VLAN_CFI);
+            if (flow->ivlan.vlan_tci & htons(VLAN_CFI) ||
                 ofpact_get_SET_VLAN_PCP(a)->push_vlan_if_needed) {
-                flow->vlan_tci &= ~htons(VLAN_PCP_MASK);
-                flow->vlan_tci |= htons((ofpact_get_SET_VLAN_PCP(a)->vlan_pcp
+                flow->ivlan.vlan_tci &= ~htons(VLAN_PCP_MASK);
+                flow->ivlan.vlan_tci |= htons((ofpact_get_SET_VLAN_PCP(a)->vlan_pcp
                                          << VLAN_PCP_SHIFT) | VLAN_CFI);
             }
             break;
 
         case OFPACT_STRIP_VLAN:
-            memset(&wc->masks.vlan_tci, 0xff, sizeof wc->masks.vlan_tci);
-            flow->vlan_tci = htons(0);
+            if (eth_type_vlan(flow->ovlan.vlan_tpid)) {
+                memset(&wc->masks.ovlan.vlan_tci, 0xff, sizeof wc->masks.ovlan.vlan_tci);
+                flow->ovlan.vlan_tpid = 0;
+                flow->ovlan.vlan_tci = 0;
+            } else {
+                memset(&wc->masks.ivlan.vlan_tci, 0xff, sizeof wc->masks.ivlan.vlan_tci);
+                flow->ivlan.vlan_tpid = 0;
+                flow->ivlan.vlan_tci = 0;
+            }
             break;
 
         case OFPACT_PUSH_VLAN:
             /* XXX 802.1AD(QinQ) */
-            memset(&wc->masks.vlan_tci, 0xff, sizeof wc->masks.vlan_tci);
-            flow->vlan_tci = htons(VLAN_CFI);
+            if (eth_type_vlan(flow->ivlan.vlan_tpid)) {
+                memset(&wc->masks.ovlan.vlan_tpid, 0xff, sizeof wc->masks.ovlan.vlan_tpid);
+                flow->ovlan.vlan_tpid = ofpact_get_PUSH_VLAN(a)->ethertype;
+                memset(&wc->masks.ovlan.vlan_tci, 0xff, sizeof wc->masks.ovlan.vlan_tci);
+                flow->ovlan.vlan_tci |= htons(VLAN_CFI);
+            } else {
+                memset(&wc->masks.ivlan.vlan_tpid, 0xff, sizeof wc->masks.ivlan.vlan_tpid);
+                flow->ivlan.vlan_tpid = ofpact_get_PUSH_VLAN(a)->ethertype;
+                memset(&wc->masks.ivlan.vlan_tci, 0xff, sizeof wc->masks.ivlan.vlan_tci);
+                flow->ivlan.vlan_tci |= htons(VLAN_CFI);
+            }
             break;
 
         case OFPACT_SET_ETH_SRC:
@@ -4636,9 +4655,16 @@ do_xlate_actions(const struct ofpact *ofpacts, size_t ofpacts_len,
             /* Set field action only ever overwrites packet's outermost
              * applicable header fields.  Do nothing if no header exists. */
             if (mf->id == MFF_VLAN_VID) {
-                wc->masks.vlan_tci |= htons(VLAN_CFI);
-                if (!(flow->vlan_tci & htons(VLAN_CFI))) {
-                    break;
+                if (eth_type_vlan(flow->ovlan.vlan_tpid)) {
+                    wc->masks.ovlan.vlan_tci |= htons(VLAN_CFI);
+                    if (!(flow->ovlan.vlan_tci & htons(VLAN_CFI))) {
+                        break;
+                    }
+                } else {
+                    wc->masks.ivlan.vlan_tci |= htons(VLAN_CFI);
+                    if (!(flow->ivlan.vlan_tci & htons(VLAN_CFI))) {
+                        break;
+                    }
                 }
             } else if ((mf->id == MFF_MPLS_LABEL || mf->id == MFF_MPLS_TC)
                        /* 'dl_type' is already unwildcarded. */
@@ -5043,8 +5069,11 @@ xlate_wc_finish(struct xlate_ctx *ctx)
         ctx->wc->masks.tp_dst &= htons(UINT8_MAX);
     }
     /* VLAN_TCI CFI bit must be matched if any of the TCI is matched. */
-    if (ctx->wc->masks.vlan_tci) {
-        ctx->wc->masks.vlan_tci |= htons(VLAN_CFI);
+    if (ctx->wc->masks.ovlan.vlan_tci) {
+        ctx->wc->masks.ovlan.vlan_tci |= htons(VLAN_CFI);
+    }
+    if (ctx->wc->masks.ivlan.vlan_tci) {
+        ctx->wc->masks.ivlan.vlan_tci |= htons(VLAN_CFI);
     }
 }
 
@@ -5123,7 +5152,7 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
      *       re-setting it, so clear the tunnel data.
      *
      *     - For VLAN splinters, a higher layer may pretend that the packet
-     *       came in on 'flow->in_port.ofp_port' with 'flow->vlan_tci'
+     *       came in on 'flow->in_port.ofp_port' with 'flow->ivlan.vlan_tci'
      *       attached, because that's how we want to treat it from an OpenFlow
      *       perspective.  But from the datapath's perspective it actually came
      *       in on a VLAN device without any VLAN attached.  So here we put the
@@ -5134,8 +5163,8 @@ xlate_actions(struct xlate_in *xin, struct xlate_out *xout)
     if (flow->in_port.ofp_port
         != vsp_realdev_to_vlandev(xbridge->ofproto,
                                   flow->in_port.ofp_port,
-                                  flow->vlan_tci)) {
-        ctx.base_flow.vlan_tci = 0;
+                                  flow->ivlan.vlan_tci)) {
+        ctx.base_flow.ivlan.vlan_tci = 0;
     }
 
     ofpbuf_reserve(ctx.odp_actions, NL_A_U32_SIZE);
