@@ -1574,16 +1574,20 @@ decode_OFPAT_RAW11_PUSH_VLAN(ovs_be16 eth_type,
                              enum ofp_version ofp_version OVS_UNUSED,
                              struct ofpbuf *out)
 {
-    if (eth_type != htons(ETH_TYPE_VLAN_8021Q)) {
-        /* XXX 802.1AD(QinQ) isn't supported at the moment */
+    struct ofpact_push_vlan *oam;
+
+    if (!eth_type_vlan(eth_type)) {
+        /* XXX Only 802.1q or 802.1AD(QinQ) are supported.  */
         return OFPERR_OFPBAC_BAD_ARGUMENT;
     }
-    ofpact_put_PUSH_VLAN(out);
+    oam = ofpact_put_PUSH_VLAN(out);
+    oam->ethertype = eth_type;
+
     return 0;
 }
 
 static void
-encode_PUSH_VLAN(const struct ofpact_null *null OVS_UNUSED,
+encode_PUSH_VLAN(const struct ofpact_push_vlan *push_vlan,
                  enum ofp_version ofp_version, struct ofpbuf *out)
 {
     if (ofp_version == OFP10_VERSION) {
@@ -1591,7 +1595,7 @@ encode_PUSH_VLAN(const struct ofpact_null *null OVS_UNUSED,
          * follow this action. */
     } else {
         /* XXX ETH_TYPE_VLAN_8021AD case */
-        put_OFPAT11_PUSH_VLAN(out, htons(ETH_TYPE_VLAN_8021Q));
+        put_OFPAT11_PUSH_VLAN(out, push_vlan->ethertype);
     }
 }
 
@@ -1603,22 +1607,22 @@ parse_PUSH_VLAN(char *arg, struct ofpbuf *ofpacts,
     char *error;
 
     *usable_protocols &= OFPUTIL_P_OF11_UP;
-    error = str_to_u16(arg, "ethertype", &ethertype);
+    error = str_to_u16(arg, "push_vlan", &ethertype);
     if (error) {
         return error;
     }
 
-    if (ethertype != ETH_TYPE_VLAN_8021Q) {
-        /* XXX ETH_TYPE_VLAN_8021AD case isn't supported */
+    if (!eth_type_vlan(htons(ethertype))) {
+        /* Check for valid VLAN ethertypes */
         return xasprintf("%s: not a valid VLAN ethertype", arg);
     }
 
-    ofpact_put_PUSH_VLAN(ofpacts);
+    ofpact_put_PUSH_VLAN(ofpacts)->ethertype = htons(ethertype);
     return NULL;
 }
 
 static void
-format_PUSH_VLAN(const struct ofpact_null *a OVS_UNUSED, struct ds *s)
+format_PUSH_VLAN(const struct ofpact_push_vlan *a OVS_UNUSED, struct ds *s)
 {
     /* XXX 802.1AD case*/
     ds_put_format(s, "%spush_vlan:%s%#"PRIx16,
@@ -6552,7 +6556,7 @@ inconsistent_match(enum ofputil_protocol *usable_protocols)
     *usable_protocols &= OFPUTIL_P_OF10_ANY;
 }
 
-/* May modify flow->dl_type, flow->nw_proto and flow->vlan_tci,
+/* May modify flow->dl_type, flow->nw_proto and flow inner vlan_tci,
  * caller must restore them.
  *
  * Modifies some actions, filling in fields that could not be properly set
@@ -6592,43 +6596,44 @@ ofpact_check__(enum ofputil_protocol *usable_protocols, struct ofpact *a,
         /* Remember if we saw a vlan tag in the flow to aid translating to
          * OpenFlow 1.1+ if need be. */
         ofpact_get_SET_VLAN_VID(a)->flow_has_vlan =
-            (flow->vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
-        if (!(flow->vlan_tci & htons(VLAN_CFI)) &&
+            (flow->ivlan.vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
+        if (!(flow->ivlan.vlan_tci & htons(VLAN_CFI)) &&
             !ofpact_get_SET_VLAN_VID(a)->push_vlan_if_needed) {
             inconsistent_match(usable_protocols);
         }
         /* Temporary mark that we have a vlan tag. */
-        flow->vlan_tci |= htons(VLAN_CFI);
+        flow->ivlan.vlan_tci |= htons(VLAN_CFI);
         return 0;
 
     case OFPACT_SET_VLAN_PCP:
         /* Remember if we saw a vlan tag in the flow to aid translating to
          * OpenFlow 1.1+ if need be. */
         ofpact_get_SET_VLAN_PCP(a)->flow_has_vlan =
-            (flow->vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
-        if (!(flow->vlan_tci & htons(VLAN_CFI)) &&
+            (flow->ivlan.vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
+        if (!(flow->ivlan.vlan_tci & htons(VLAN_CFI)) &&
             !ofpact_get_SET_VLAN_PCP(a)->push_vlan_if_needed) {
             inconsistent_match(usable_protocols);
         }
         /* Temporary mark that we have a vlan tag. */
-        flow->vlan_tci |= htons(VLAN_CFI);
+        flow->ivlan.vlan_tci |= htons(VLAN_CFI);
         return 0;
 
     case OFPACT_STRIP_VLAN:
-        if (!(flow->vlan_tci & htons(VLAN_CFI))) {
+        if (!(flow->ivlan.vlan_tci & htons(VLAN_CFI))) {
             inconsistent_match(usable_protocols);
         }
         /* Temporary mark that we have no vlan tag. */
-        flow->vlan_tci = htons(0);
+        flow->ivlan.vlan_tci = htons(0);
         return 0;
 
     case OFPACT_PUSH_VLAN:
-        if (flow->vlan_tci & htons(VLAN_CFI)) {
-            /* Multiple VLAN headers not supported. */
+        if (flow->ovlan.vlan_tci & htons(VLAN_CFI) &&
+            flow->ivlan.vlan_tci & htons(VLAN_CFI)) {
+            /* More then 2 levels of VLAN headers not supported. */
             return OFPERR_OFPBAC_BAD_TAG;
         }
         /* Temporary mark that we have a vlan tag. */
-        flow->vlan_tci |= htons(VLAN_CFI);
+        flow->ivlan.vlan_tci |= htons(VLAN_CFI);
         return 0;
 
     case OFPACT_SET_ETH_SRC:
@@ -6675,7 +6680,7 @@ ofpact_check__(enum ofputil_protocol *usable_protocols, struct ofpact *a,
         mf = ofpact_get_SET_FIELD(a)->field;
         /* Require OXM_OF_VLAN_VID to have an existing VLAN header. */
         if (!mf_are_prereqs_ok(mf, flow) ||
-            (mf->id == MFF_VLAN_VID && !(flow->vlan_tci & htons(VLAN_CFI)))) {
+            (mf->id == MFF_VLAN_VID && !(flow->ivlan.vlan_tci & htons(VLAN_CFI)))) {
             VLOG_WARN_RL(&rl, "set_field %s lacks correct prerequisities",
                          mf->name);
             return OFPERR_OFPBAC_MATCH_INCONSISTENT;
@@ -6683,11 +6688,11 @@ ofpact_check__(enum ofputil_protocol *usable_protocols, struct ofpact *a,
         /* Remember if we saw a vlan tag in the flow to aid translating to
          * OpenFlow 1.1 if need be. */
         ofpact_get_SET_FIELD(a)->flow_has_vlan =
-            (flow->vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
+            (flow->ivlan.vlan_tci & htons(VLAN_CFI)) == htons(VLAN_CFI);
         if (mf->id == MFF_VLAN_TCI) {
             /* The set field may add or remove the vlan tag,
              * Mark the status temporarily. */
-            flow->vlan_tci = ofpact_get_SET_FIELD(a)->value.be16;
+            flow->ivlan.vlan_tci = ofpact_get_SET_FIELD(a)->value.be16;
         }
         return 0;
 
@@ -6848,7 +6853,7 @@ ofpacts_check(struct ofpact ofpacts[], size_t ofpacts_len,
 {
     struct ofpact *a;
     ovs_be16 dl_type = flow->dl_type;
-    ovs_be16 vlan_tci = flow->vlan_tci;
+    ovs_be16 vlan_tci = flow->ivlan.vlan_tci;
     uint8_t nw_proto = flow->nw_proto;
     enum ofperr error = 0;
 
@@ -6861,7 +6866,7 @@ ofpacts_check(struct ofpact ofpacts[], size_t ofpacts_len,
     }
     /* Restore fields that may have been modified. */
     flow->dl_type = dl_type;
-    flow->vlan_tci = vlan_tci;
+    flow->ivlan.vlan_tci = vlan_tci;
     flow->nw_proto = nw_proto;
     return error;
 }
@@ -7379,6 +7384,7 @@ ofpacts_get_meter(const struct ofpact ofpacts[], size_t ofpacts_len)
 }
 
 /* Formatting ofpacts. */
+
 
 static void
 ofpact_format(const struct ofpact *a, struct ds *s)
