@@ -53,6 +53,19 @@ struct flow_tnl {
     struct tun_metadata metadata;
 };
 
+/*
+ * Vlan tag information for both 802.1Q and 802.1AD.
+ */
+struct flow_vlan {
+    ovs_be16 vlan_tpid;
+    ovs_be16 vlan_tci;
+};
+
+struct flow_qandq_vlan {
+    struct flow_vlan ovlan;
+    struct flow_vlan ivlan;
+};
+
 /* Some flags are exposed through OpenFlow while others are used only
  * internally. */
 

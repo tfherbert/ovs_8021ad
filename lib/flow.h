@@ -40,7 +40,7 @@ struct match;
 /* This sequence number should be incremented whenever anything involving flows
  * or the wildcarding of flows changes.  This will cause build assertion
  * failures in places which likely need to be updated. */
-#define FLOW_WC_SEQ 35
+#define FLOW_WC_SEQ 36
 
 /* Number of Open vSwitch extension 32-bit registers. */
 #define FLOW_N_REGS 8
@@ -114,8 +114,12 @@ struct flow {
     /* L2, Order the same as in the Ethernet header! (64-bit aligned) */
     struct eth_addr dl_dst;     /* Ethernet destination address. */
     struct eth_addr dl_src;     /* Ethernet source address. */
+    uint8_t  pad3[2];           /* Pad inner vlan tci and dl_type are in same word. */
+    struct flow_vlan ovlan;     /* If 802.1AD, service (outer) vlan tag
+                                 * otherwise vlan tag. */
+    struct flow_vlan ivlan;     /* If 802.1AD,  customer (inner) vlan tag
+                                 * otherwise vlan tag. */
     ovs_be16 dl_type;           /* Ethernet frame type. */
-    ovs_be16 vlan_tci;          /* If 802.1Q, TCI | VLAN_CFI; otherwise 0. */
     ovs_be32 mpls_lse[ROUND_UP(FLOW_MAX_MPLS_LABELS, 2)]; /* MPLS label stack
                                                              (with padding). */
     /* L3 (64-bit aligned) */
@@ -132,7 +136,7 @@ struct flow {
     struct eth_addr arp_sha;    /* ARP/ND source hardware address. */
     struct eth_addr arp_tha;    /* ARP/ND target hardware address. */
     ovs_be16 tcp_flags;         /* TCP flags. With L3 to avoid matching L4. */
-    ovs_be16 pad3;              /* Pad to 64 bits. */
+    ovs_be16 pad4;              /* Pad to 64 bits. */
 
     /* L4 (64-bit aligned) */
     ovs_be16 tp_src;            /* TCP/UDP/SCTP source port/ICMP type. */
@@ -158,8 +162,8 @@ BUILD_ASSERT_DECL(sizeof(struct flow_tnl) % sizeof(uint64_t) == 0);
 
 /* Remember to update FLOW_WC_SEQ when changing 'struct flow'. */
 BUILD_ASSERT_DECL(offsetof(struct flow, igmp_group_ip4) + sizeof(uint32_t)
-                  == sizeof(struct flow_tnl) + 216
-                  && FLOW_WC_SEQ == 35);
+                  == sizeof(struct flow_tnl) + 224
+                  && FLOW_WC_SEQ == 36);
 
 /* Incremental points at which flow classification may be performed in
  * segments.
@@ -902,7 +906,7 @@ static inline ovs_be32 miniflow_get_be32(const struct miniflow *flow,
 static inline uint16_t
 miniflow_get_vid(const struct miniflow *flow)
 {
-    ovs_be16 tci = MINIFLOW_GET_BE16(flow, vlan_tci);
+    ovs_be16 tci = MINIFLOW_GET_BE16(flow, ivlan.vlan_tci);
     return vlan_tci_to_vid(tci);
 }
 
